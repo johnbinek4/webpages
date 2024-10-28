@@ -44,7 +44,8 @@ st.markdown("""
 st.markdown('<div class="main-title">Quantitative Trading</div>', unsafe_allow_html=True)
 
 # Read and process data
-df = pd.read_csv('tradingHist.csv')
+import os
+df = pd.read_csv(os.path.join(os.path.dirname(os.path.dirname(__file__)), 'tradingHist.csv'))
 df.rename(columns={'hyp': 'Portfolio', 'hyp2': 'SPXTR Index'}, inplace=True)
 df['Portfolio'] = df['Portfolio'].str.replace('$', '').astype(float)
 df['SPXTR Index'] = df['SPXTR Index'].str.replace('$', '').astype(float)
