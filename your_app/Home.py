@@ -105,7 +105,7 @@ with col1:
         '<div style="display: flex; justify-content: center; align-items: center; padding-top: 20px;">',
         unsafe_allow_html=True
     )
-    st.image("image.png", width=500)  # Set explicit width to 200 pixels
+    #st.image("image.png", width=500)  # Set explicit width to 200 pixels
     st.markdown('</div>', unsafe_allow_html=True)
 
 # Column 2: Text content on the right
