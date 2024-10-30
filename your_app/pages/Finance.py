@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import numpy as np
 from datetime import datetime, timedelta
 from scipy import stats
@@ -17,11 +18,9 @@ st.markdown("""
     #MainMenu {
         display: none;
     }
-    /* Hide default sidebar nav */
     section[data-testid="stSidebarNav"] {
         display: none;
     }
-    /* Main title styling */
     .main-title {
         text-align: center;
         color: #1f1f1f;
@@ -30,7 +29,6 @@ st.markdown("""
         margin-bottom: 30px;
         padding-top: 20px;
     }
-    /* Table styling */
     [data-testid="stDataFrame"] {
         padding: 0px !important;
     }
@@ -53,62 +51,136 @@ df['Date'] = pd.to_datetime(df['Date'], format='%m/%d/%y')
 df['Portfolio_Return'] = df['Portfolio'].pct_change()
 df['SPXTR_Return'] = df['SPXTR Index'].pct_change()
 
-def calculate_metrics(filtered_df):
-    """Calculate portfolio metrics"""
-    # Calculate actual number of trading days and annualization factor
-    total_days = len(filtered_df) - 1  # Subtract 1 because we lose a day calculating returns
+# Calculate monthly returns
+df['YearMonth'] = df['Date'].dt.to_period('M')
+monthly_returns = df.groupby('YearMonth').agg({
+    'Portfolio_Return': lambda x: (1 + x).prod() - 1,
+    'SPXTR_Return': lambda x: (1 + x).prod() - 1
+}).reset_index()
+
+def calculate_metrics(filtered_df, monthly_rets):
+    """Calculate enhanced portfolio metrics including all major risk-adjusted ratios"""
     days_in_year = 252
-    annualization_factor = days_in_year / total_days
     
+    # Daily returns calculations
     returns = filtered_df['Portfolio_Return'].dropna()
     benchmark_returns = filtered_df['SPXTR_Return'].dropna()
     
+    # Monthly returns calculations
+    monthly_port_returns = monthly_rets['Portfolio_Return']
+    monthly_bench_returns = monthly_rets['SPXTR_Return']
+    
     # Basic return metrics
     total_return = (filtered_df['Portfolio'].iloc[-1] / filtered_df['Portfolio'].iloc[0] - 1)
-    
-    # Annualize the total return properly
+    annualization_factor = days_in_year / (len(filtered_df) - 1)
     annualized_return = (1 + total_return) ** annualization_factor - 1
     
     # Risk calculations
     daily_std = returns.std()
-    annualized_vol = daily_std * np.sqrt(days_in_year)  # Standard deviation still uses sqrt(252)
+    monthly_std = monthly_port_returns.std()
+    annualized_vol = daily_std * np.sqrt(days_in_year)
     
-    # Sharpe Ratio using raw decimals
-    sharpe_ratio = annualized_return / annualized_vol
+    # Sharpe Ratio calculations
+    daily_sharpe = np.mean(returns) / np.std(returns)
+    annualized_sharpe = daily_sharpe * np.sqrt(days_in_year)
     
-    # Convert to percentages for display
-    total_return_pct = total_return * 100
-    annualized_return_pct = annualized_return * 100
-    annualized_vol_pct = annualized_vol * 100
+    monthly_sharpe = np.mean(monthly_port_returns) / np.std(monthly_port_returns)
+    monthly_annualized_sharpe = monthly_sharpe * np.sqrt(12)
     
-    # Calculate drawdown
-    cum_returns = (1 + returns).cumprod()
-    rolling_max = cum_returns.expanding().max()
-    drawdowns = cum_returns / rolling_max - 1
-    max_drawdown = drawdowns.min() * 100
-    
-    # Beta and Correlation
+    # Beta calculation
     beta = returns.cov(benchmark_returns) / benchmark_returns.var()
-    correlation = returns.corr(benchmark_returns)
+    
+    # Treynor Ratio (annualized return / beta)
+    treynor_ratio = annualized_return / beta if beta != 0 else np.nan
+    
+    # Information Ratio calculations
+    # Daily tracking error and IR
+    daily_active_returns = returns - benchmark_returns
+    tracking_error_daily = np.std(daily_active_returns) * np.sqrt(days_in_year)
+    information_ratio = np.mean(daily_active_returns) * days_in_year / tracking_error_daily if tracking_error_daily != 0 else np.nan
+    
+    # Monthly tracking error and IR
+    monthly_active_returns = monthly_port_returns - monthly_bench_returns
+    tracking_error_monthly = np.std(monthly_active_returns) * np.sqrt(12)
+    monthly_information_ratio = np.mean(monthly_active_returns) * 12 / tracking_error_monthly if tracking_error_monthly != 0 else np.nan
+    
+    # Sortino Ratio calculations
+    # Daily Sortino
+    downside_returns = returns[returns < 0]
+    downside_std = np.sqrt(np.mean(downside_returns**2)) * np.sqrt(days_in_year)
+    sortino_ratio = annualized_return / downside_std if len(downside_returns) > 0 else np.nan
+    
+    # Monthly Sortino
+    monthly_downside_returns = monthly_port_returns[monthly_port_returns < 0]
+    monthly_downside_std = np.sqrt(np.mean(monthly_downside_returns**2)) * np.sqrt(12)
+    monthly_sortino = (np.mean(monthly_port_returns) * 12) / monthly_downside_std if len(monthly_downside_returns) > 0 else np.nan
+    
+    # Drawdown calculations
+    portfolio_values = filtered_df['Portfolio']
+    rolling_max = portfolio_values.expanding().max()
+    drawdowns = (portfolio_values - rolling_max) / rolling_max
+    max_drawdown = drawdowns.min() * 100  # Convert to percentage
+    
+    # Monthly statistics
+    best_month = monthly_port_returns.max() * 100
+    worst_month = monthly_port_returns.min() * 100
+    avg_month = monthly_port_returns.mean() * 100
+    up_months = (monthly_port_returns > 0).mean() * 100
+    down_months = (monthly_port_returns < 0).mean() * 100
+    avg_loss = monthly_port_returns[monthly_port_returns < 0].mean() * 100 if len(monthly_port_returns[monthly_port_returns < 0]) > 0 else 0
+    
+    # Distribution statistics
+    skewness = stats.skew(monthly_port_returns)
+    kurtosis = stats.kurtosis(monthly_port_returns)
     
     metrics_data = {
         'Metric': [
             'Total Return',
             'Annualized Return',
             'Annualized Volatility',
-            'Sharpe Ratio',
-            'Maximum Drawdown',
+            'Sharpe Ratio (Ann.)',
+            'Monthly Sharpe (Ann.)',
+            'Sortino Ratio (Ann.)',
+            'Monthly Sortino (Ann.)',
+            'Information Ratio',
+            'Monthly Info Ratio',
+            'Treynor Ratio',
+            'Tracking Error (Ann.)',
             'Beta',
-            'Correlation'
+            'Maximum Drawdown',
+            'Best Month',
+            'Worst Month',
+            'Average Month',
+            'Up Months %',
+            'Down Months %',
+            'Average Loss',
+            'Monthly Std Dev (Ann.)',
+            'Skewness',
+            'Kurtosis'
         ],
         'Value': [
-            f"{total_return_pct:,.2f}%",
-            f"{annualized_return_pct:,.2f}%",
-            f"{annualized_vol_pct:,.2f}%",
-            f"{sharpe_ratio:.2f}",
-            f"{max_drawdown:,.2f}%",
+            f"{total_return*100:,.2f}%",
+            f"{annualized_return*100:,.2f}%",
+            f"{annualized_vol*100:,.2f}%",
+            f"{annualized_sharpe:.2f}",
+            f"{monthly_annualized_sharpe:.2f}",
+            f"{sortino_ratio:.2f}",
+            f"{monthly_sortino:.2f}",
+            f"{information_ratio:.2f}",
+            f"{monthly_information_ratio:.2f}",
+            f"{treynor_ratio:.2f}",
+            f"{tracking_error_daily*100:.2f}%",
             f"{beta:.2f}",
-            f"{correlation:.2f}"
+            f"{max_drawdown:,.2f}%",
+            f"{best_month:.2f}%",
+            f"{worst_month:.2f}%",
+            f"{avg_month:.2f}%",
+            f"{up_months:.1f}%",
+            f"{down_months:.1f}%",
+            f"{avg_loss:.2f}%",
+            f"{monthly_std*np.sqrt(12)*100:.2f}%",
+            f"{skewness:.2f}",
+            f"{kurtosis:.2f}"
         ]
     }
     
@@ -116,27 +188,47 @@ def calculate_metrics(filtered_df):
 
 # Add sidebar navigation
 with st.sidebar:
-    # Trading Philosophy section only
     st.title("Trading Philosophy")
     philosophy_nav = st.radio(
-        "Trading Strategy Selection",  # Added descriptive label
+        "Trading Strategy Selection",
         ["Performance Dashboard", "Market Maker Exposure", "Long / Short Volatility"],
         key="philosophy_nav",
-        label_visibility="collapsed"  # Hides the label while keeping it accessible
+        label_visibility="collapsed"
     )
 
 # Handle Trading Philosophy navigation
 if philosophy_nav == "Performance Dashboard":
-    # Create two columns for plot and metrics
-    col1, col2 = st.columns([2, 1], gap="small")
+    # Create two columns with metrics on left, charts on right
+    col1, col2 = st.columns([1, 2], gap="small")
 
     with col1:
-        # Create figure with buttons
+        # Calculate metrics
+        metrics_df = calculate_metrics(df, monthly_returns)
+        
+        # Display the dataframe with exact height
+        st.dataframe(
+            metrics_df,
+            column_config={
+                "Metric": st.column_config.Column(
+                    "Metric",
+                    width=200,
+                ),
+                "Value": st.column_config.Column(
+                    "Value",
+                    width=150,
+                ),
+            },
+            hide_index=True,
+            use_container_width=True,
+            height=(len(metrics_df) * 35 + 3)  # Precise height calculation based on number of rows
+        )
+
+    with col2:
+        # Create performance figure
         fig = px.line(df, x='Date', y=['Portfolio', 'SPXTR Index'],
                     labels={'value': 'Value ($)', 'variable': 'Series'},
                     title='Performance')
 
-        # Add range selector buttons inside the plot
         fig.update_xaxes(
             rangeslider_visible=False,
             rangeselector=dict(
@@ -149,9 +241,8 @@ if philosophy_nav == "Performance Dashboard":
             )
         )
 
-        # Customize layout
         fig.update_layout(
-            height=700,
+            height=500,
             margin=dict(l=0, r=0, t=40, b=0),
             title_font_size=24,
             title_x=0.5,
@@ -172,34 +263,44 @@ if philosophy_nav == "Performance Dashboard":
 
         st.plotly_chart(fig, use_container_width=True)
 
-    with col2:
-        metrics_df = calculate_metrics(df)
-        
-        # Center align the title
-        st.markdown("<h2 style='text-align: center; color: #333333;'>Analytics</h2>", unsafe_allow_html=True)
-        
-        # Calculate row height based on number of metrics
-        row_height = 43  # Approximate height per row
-        num_metrics = len(metrics_df)
-        table_height = row_height * num_metrics
-        
-        # Style the dataframe
-        st.dataframe(
-            metrics_df,
-            column_config={
-                "Metric": st.column_config.Column(
-                    "Metric",
-                    width=200,
-                ),
-                "Value": st.column_config.Column(
-                    "Value",
-                    width=150,
-                ),
-            },
-            hide_index=True,
-            use_container_width=True,
-            height=table_height
+        # Create monthly returns distribution
+        fig_dist = go.Figure()
+
+        # Add histogram for Portfolio returns
+        fig_dist.add_trace(go.Histogram(
+            x=monthly_returns['Portfolio_Return'] * 100,
+            name='Portfolio',
+            opacity=0.75,
+            nbinsx=20
+        ))
+
+        # Add histogram for SPXTR returns
+        fig_dist.add_trace(go.Histogram(
+            x=monthly_returns['SPXTR_Return'] * 100,
+            name='SPXTR Index',
+            opacity=0.75,
+            nbinsx=20
+        ))
+
+        fig_dist.update_layout(
+            title='Monthly Returns Distribution',
+            title_x=0.5,
+            xaxis_title='Monthly Return (%)',
+            yaxis_title='Frequency',
+            barmode='overlay',
+            template="plotly_dark",
+            height=300,
+            margin=dict(l=0, r=0, t=40, b=0),
+            showlegend=True,
+            legend=dict(
+                yanchor="top",
+                y=0.99,
+                xanchor="left",
+                x=0.01
+            )
         )
+
+        st.plotly_chart(fig_dist, use_container_width=True)
 
 elif philosophy_nav == "Market Maker Exposure":
     st.write("""
